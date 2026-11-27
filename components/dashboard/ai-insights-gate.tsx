@@ -12,6 +12,7 @@ import { InsightsPanel } from '@/components/dashboard/insights-panel';
 import { DeepInsightTeasers } from '@/components/dashboard/deep-insight-teasers';
 import { AIInsightsCTA } from '@/components/dashboard/ai-insights-cta';
 import { loadNightNotes } from '@/lib/night-notes';
+import { loadBreathData } from '@/lib/breath-data-idb';
 import * as Sentry from '@sentry/nextjs';
 import { events } from '@/lib/analytics';
 import type { NightResult } from '@/lib/types';
@@ -108,7 +109,7 @@ export function AIInsightsGate({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatGPTPlus, isSharedView, user, isPaid, isDemo, hasAiConsent]);
 
-  const handleGenerate = useCallback(() => {
+  const handleGenerate = useCallback((chatGPTDeep = false) => {
     if (isSharedView || isDemo || !user || (!chatGPTPlus && !hasAiConsent)) return;
 
     abortRef.current?.abort();
@@ -128,8 +129,23 @@ export function AIInsightsGate({
 
     const nightIdx = selectedIdx >= 0 ? selectedIdx : 0;
 
-    // Use deep fetch for paid users — includes per-breath data from the selected night
-    const fetchFn = isDeepAccess
+    const fetchFn = chatGPTPlus && chatGPTDeep
+      ? async () => {
+          const breaths = selectedNight.ned.breaths?.length
+            ? selectedNight.ned.breaths
+            : await loadBreathData(selectedNight.dateStr);
+          if (controller.signal.aborted) return;
+          if (!breaths?.length) {
+            throw new Error('No per-breath data is available for this night. Re-upload your SD card to try deep insights.');
+          }
+          return fetchDeepAIInsights(nights, nightIdx, therapyChangeDate, controller.signal, undefined, {
+            breaths: breaths.slice(0, 1000).map(({ ned, fi, isMShape, tPeakTi, qPeak, ti }) => ({
+              ned, fi, mShape: isMShape, tPeakTi, qPeak, duration: ti,
+            })),
+            breathCount: breaths.length,
+          }, true);
+        }
+      : isDeepAccess
       ? () => {
           // Extract per-breath summary from NED engine breaths if available
           const night = nights[nightIdx]!;
@@ -155,7 +171,7 @@ export function AIInsightsGate({
 
     fetchFn()
       .then((result) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || !result) return;
         setServerRemainingCredits(result.remainingCredits);
         setAiInsights(result.insights);
         setIsDeepResult(result.isDeep ?? false);
@@ -371,8 +387,8 @@ export function AIInsightsGate({
         />
       )}
 
-      {/* Generate button — only if insights not yet loaded for this night */}
-      {(!aiInsights || (chatGPTPlus && nightChanged)) && !aiLoading && (
+      {/* Local mode can run either analysis independently, even after a result. */}
+      {(chatGPTPlus || !aiInsights) && !aiLoading && (
         <div className="flex flex-col items-center gap-2 rounded-xl border border-border/50 bg-card/30 px-4 py-4">
           {chatGPTPlus ? (
             <>
@@ -380,9 +396,16 @@ export function AIInsightsGate({
                 Send nightly metrics, dates, machine settings, and trends to OpenAI using your ChatGPT plan.
                 No night notes, per-breath summaries, or raw waveforms are sent. Discuss results with your clinician.
               </p>
-              <Button onClick={handleGenerate} className="gap-2">
+              <Button onClick={() => handleGenerate()} className="gap-2">
                 <Sparkles className="h-3.5 w-3.5" />
                 Send to OpenAI &amp; generate insights
+              </Button>
+              <p className="text-center text-xs text-muted-foreground">
+                Deep insights also send the first 1,000 per-breath metric summaries (or fewer if available)
+                from the selected night to OpenAI. No raw waveforms or night notes are sent.
+              </p>
+              <Button variant="outline" onClick={() => handleGenerate(true)}>
+                Send to OpenAI &amp; generate deep insights
               </Button>
             </>
           ) : isExhausted ? (
@@ -422,7 +445,7 @@ export function AIInsightsGate({
           ) : (
             <>
               <Button
-                onClick={handleGenerate}
+                onClick={() => handleGenerate()}
                 disabled={aiLoading}
                 className="gap-2"
               >
@@ -480,7 +503,7 @@ export function AIInsightsGate({
           <Button
             variant="ghost"
             size="sm"
-            onClick={handleGenerate}
+            onClick={() => handleGenerate()}
             disabled={isExhausted}
             className="gap-1.5 text-xs text-muted-foreground"
           >

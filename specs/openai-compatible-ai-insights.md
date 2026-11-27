@@ -13,6 +13,12 @@
 - Before each run, disclose the configured destination and the data sent (nightly metrics, dates, settings, and trends). Require confirmation on the request and reject it if the destination differs from what the user confirmed. Do not read or write Anthropic consent for these runs. Update the privacy disclosure and keep prompts, generated text, credentials, and raw provider errors out of remote logs and storage.
 - No database migration, browser-direct provider calls, provider marketplace, or hosted BYOK. Disabling the server setting restores the default path.
 
+## ChatGPT deep insights follow-up
+
+- Add a separate manual action that discloses up to 1,000 selected-night per-breath metric summaries. Require deep-specific consent at the route; never upgrade a standard request to deep. Keep owner/loopback checks and omit notes, waveforms, and remote logging.
+- Read computed metrics from the selected night or browser IndexedDB. If unavailable, ask the user to re-upload. Label the returned insights as deep and tell the model not to generalize the sampled breaths to the whole night. No tier, schema migration, or hosted behavior change.
+- Verify separate consent, missing breath data, restored nights, payload field allowlisting, and unchanged standard requests. Smoke-test both buttons using synthetic data.
+
 ## Verification
 
 - Test unchanged Anthropic behavior, non-owner and deep request rejection, missing consent or changed destination, malformed output, timeout, and no fallback. Test Plus completion, refresh/disconnect, and plan limits; test API-key auth, optional loopback auth, and redirect rejection.

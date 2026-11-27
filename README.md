@@ -76,22 +76,92 @@ Visit [airwaylab.app](https://airwaylab.app) — no install needed.
 
 ### Local development
 
+Use Node.js 20 (`20.19` or newer). From your AirwayLab checkout:
+
 ```bash
-git clone https://github.com/airwaylab-app/airwaylab.git
-cd airwaylab
-npm install
-npm run dev
+npm ci
+npm run dev -- --hostname 127.0.0.1
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). SD card analysis and rule-based insights don’t need accounts or environment variables.
 
 ### Use a ChatGPT plan for local AI Insights (macOS)
 
-1. Configure a local or dedicated dev Supabase project with the repo migrations. In `.env.local`, set its URL and anon key, set `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000`, and allow `http://127.0.0.1:3000/auth/callback` in Supabase Auth. Sign in to AirwayLab and set `AIRWAYLAB_CHATGPT_OWNER_ID` to that user's Supabase UUID.
-2. Run `node scripts/chatgpt.mjs login`, approve plan usage in your browser, then run `node scripts/chatgpt.mjs models`. Set `AIRWAYLAB_CHATGPT_MODEL` in `.env.local` to one of the listed slugs. No API key is needed.
-3. Start or restart with `npm run dev -- --hostname 127.0.0.1`. Open the dashboard and choose **Send to OpenAI & generate insights**. Start with synthetic data. OpenAI processes the approved metrics in the cloud; standard insights only. Do not enable this mode on a shared or remotely accessible server.
+**You need:** an eligible ChatGPT plan and OrbStack or Docker Desktop. You don’t need a Supabase.com account, a paid AirwayLab tier, or an OpenAI API key.
 
-Run `node scripts/chatgpt.mjs logout` to disconnect. To disable the mode, remove `AIRWAYLAB_CHATGPT_OWNER_ID` and restart (or rebuild for a production install). If an interrupted session operation leaves a stale lock, stop AirwayLab and the sign-in command before running `rmdir ~/.config/airwaylab/chatgpt.json.lock`.
+#### 1. Start Supabase
+
+Open OrbStack or Docker Desktop. Set up a separate Supabase project for sign-in only. Don’t run `supabase start` from the AirwayLab repo: its full migration history doesn’t replay on a fresh database.
+
+```bash
+brew install supabase/tap/supabase
+mkdir -p ~/airwaylab-local-auth
+cd ~/airwaylab-local-auth
+supabase init
+```
+
+In `supabase/config.jsonc` (or `config.toml`), set:
+
+| Auth setting | Value |
+| --- | --- |
+| `auth.site_url` | `http://127.0.0.1:3000` |
+| `auth.additional_redirect_urls` | `["http://127.0.0.1:3000/auth/**"]` |
+
+Run `supabase start` in that directory. Copy the **Publishable** key (or **anon** on older CLI versions). Mailpit and Studio start automatically.
+
+#### 2. Configure AirwayLab
+
+In your AirwayLab checkout, add to `.env.local`:
+
+```dotenv
+NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<local Publishable key>
+```
+
+Use only the local key. A service-role key isn’t needed. Start AirwayLab:
+
+```bash
+npm run dev -- --hostname 127.0.0.1
+```
+
+#### 3. Sign in and get your owner ID
+
+1. Request a sign-in link on [local AirwayLab](http://127.0.0.1:3000).
+2. In the same browser, open [Mailpit](http://127.0.0.1:54324) and click **Your sign-in link**. The email goes to Mailpit, not your regular inbox. If the link takes you to `localhost`, return to AirwayLab at `127.0.0.1`.
+3. In [Supabase Studio](http://127.0.0.1:54323), go to **Authentication → Users** and copy the **UID** next to your email. The UID is in Studio, not in the email.
+
+#### 4. Connect ChatGPT and choose a model
+
+From your AirwayLab checkout, run `login` and approve access in your browser. Then run `models`:
+
+```bash
+node scripts/chatgpt.mjs login
+node scripts/chatgpt.mjs models
+```
+
+Add both values to `.env.local`:
+
+```dotenv
+AIRWAYLAB_CHATGPT_OWNER_ID=<UID from Supabase Studio>
+AIRWAYLAB_CHATGPT_MODEL=<model slug from the models command>
+```
+
+#### 5. Run insights
+
+Restart AirwayLab with the command from step 2. Load a PAP night outside demo mode and open **Overview**.
+
+- **Send to OpenAI & generate insights** sends nightly metrics, dates, settings, and trends.
+- **Send to OpenAI & generate deep insights** also sends up to 1,000 per-breath metric summaries from the selected night.
+
+Neither sends raw waveforms or night notes. OpenAI processes the approved data in the cloud. Keep this setup on your own Mac.
+
+**Troubleshooting**
+
+- Still signed out? Request a fresh link from `127.0.0.1:3000` and open it in the same browser. Don’t switch between `localhost` and `127.0.0.1`.
+- Profile, night sync, and benchmark warnings are expected: this Supabase instance only handles sign-in and doesn’t store PAP data.
+- To disconnect ChatGPT, run `node scripts/chatgpt.mjs logout`. To disable this mode, remove `AIRWAYLAB_CHATGPT_OWNER_ID` and restart AirwayLab.
+- If interrupted sign-in leaves a stale lock, stop AirwayLab and the sign-in command, then run `rmdir ~/.config/airwaylab/chatgpt.json.lock`.
 
 ### Tests
 

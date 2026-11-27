@@ -64,7 +64,7 @@ interface BreathSummary {
 interface PerBreathSummary {
   breaths: BreathSummary[];
   breathCount: number;
-  sampleRate: number;
+  sampleRate?: number;
 }
 
 // Zod schema guards the response shape before any downstream consumption.
@@ -239,8 +239,7 @@ export async function fetchAIInsights(
 }
 
 /**
- * Fetches deep AI insights for paid users — includes per-breath summary data.
- * Longer timeout (30s) since the prompt is larger.
+ * Fetches deep AI insights with per-breath summary data.
  * Throws on failure with a user-facing error message.
  */
 export async function fetchDeepAIInsights(
@@ -249,7 +248,8 @@ export async function fetchDeepAIInsights(
   therapyChangeDate: string | null,
   signal?: AbortSignal,
   nightNotes?: NightNotes,
-  perBreathSummary?: PerBreathSummary
+  perBreathSummary?: PerBreathSummary,
+  chatGPTPlus = false
 ): Promise<AIInsightsResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 65000);
@@ -272,13 +272,16 @@ export async function fetchDeepAIInsights(
   try {
     const res = await fetch('/api/ai-insights', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(chatGPTPlus && { 'X-AirwayLab-ChatGPT-Consent': 'https://api.openai.com; mode=deep' }),
+      },
       credentials: 'same-origin',
       body: JSON.stringify({
         nights: strippedNights,
         selectedNightIndex: adjustedIndex,
         therapyChangeDate,
-        nightNotes,
+        nightNotes: chatGPTPlus ? undefined : nightNotes,
         deep: true,
         perBreathSummary: trimmedBreaths,
       }),
@@ -295,7 +298,7 @@ export async function fetchDeepAIInsights(
     const validInsights = validateInsights(data);
     if (!validInsights) {
       console.error('[ai-insights] Invalid response format');
-      Sentry.captureMessage('AI insights: empty or malformed response after 200', {
+      if (!chatGPTPlus) Sentry.captureMessage('AI insights: empty or malformed response after 200', {
         level: 'warning',
         tags: { checkpoint: 'ai_insights_empty', mode: 'deep' },
         extra: { hasInsightsKey: 'insights' in (data as Record<string, unknown>), rawLength: JSON.stringify(data).length },
@@ -318,7 +321,7 @@ export async function fetchDeepAIInsights(
     }
     if (err instanceof TypeError && err.message === 'Failed to fetch') {
       console.error('[ai-insights] Network error (deep mode)');
-      Sentry.captureException(err, {
+      if (!chatGPTPlus) Sentry.captureException(err, {
         level: 'warning',
         tags: { error_type: 'network_fetch_failed', mode: 'deep', route: 'ai-insights' },
       });

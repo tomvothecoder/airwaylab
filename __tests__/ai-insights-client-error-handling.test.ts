@@ -61,6 +61,25 @@ describe('AI Insights Client Error Handling (AIR-1538)', () => {
     );
   });
 
+  it('sends distinct deep consent with a capped ChatGPT payload and no notes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ insights: [{ id: 'ai-1', type: 'info', title: 'Test' }], isDeep: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { fetchDeepAIInsights } = await import('@/lib/ai-insights-client');
+    const breath = { ned: 3, fi: 0.8, mShape: false, tPeakTi: 0.5, qPeak: 24, duration: 1.2 };
+    const breaths = Array.from({ length: 1001 }, () => breath);
+    const result = await fetchDeepAIInsights([makeNight() as never], 0, null, undefined, { note: 'private' } as never, {
+      breaths, breathCount: breaths.length,
+    }, true);
+    const [url, options] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/ai-insights');
+    expect(options.headers['X-AirwayLab-ChatGPT-Consent']).toBe('https://api.openai.com; mode=deep');
+    const payload = JSON.parse(options.body);
+    expect(payload).not.toHaveProperty('nightNotes');
+    expect(payload.deep).toBe(true);
+    expect(payload.perBreathSummary.breaths).toHaveLength(1000);
+    expect(result.isDeep).toBe(true);
+  });
+
   it('captures Failed-to-fetch to Sentry with network_fetch_failed tag (deep mode)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
 

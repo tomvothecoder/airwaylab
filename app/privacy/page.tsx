@@ -149,8 +149,9 @@ export default function PrivacyPolicyPage() {
               waveform samples are <strong>never</strong> sent to the AI model. If you run
               AirwayLab on your own computer and enable ChatGPT plan mode, OpenAI receives
               nightly metrics, dates, settings, and trends only when you confirm each request.
-              This mode omits night notes and per-breath summaries and does not store the
-              generated insights in AirwayLab&rsquo;s cloud services.
+              If you choose deep insights, the request also includes up to 1,000 per-breath
+              metric summaries from the selected night. Neither option sends night notes or
+              raw waveforms or stores the generated insights in AirwayLab&rsquo;s cloud services.
             </li>
             <li>
               <strong>Analysis Data:</strong> Aggregate scores and per-breath summaries are

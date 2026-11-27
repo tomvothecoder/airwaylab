@@ -380,8 +380,11 @@ const RequestBodySchema = z.object({
 });
 
 type RequestBody = z.infer<typeof RequestBodySchema>;
+const ChatGPTRequestBodySchema = RequestBodySchema.extend({
+  perBreathSummary: PerBreathSummarySchema.unwrap().omit({ sampleRate: true }).optional(),
+});
 
-function buildUserPrompt(body: RequestBody): string {
+function buildUserPrompt(body: RequestBody | z.infer<typeof ChatGPTRequestBodySchema>): string {
   const { nights, selectedNightIndex, therapyChangeDate, nightNotes } = body;
   const selected = nights[selectedNightIndex]!;
   const previous = selectedNightIndex < nights.length - 1 ? nights[selectedNightIndex + 1] : null;
@@ -454,7 +457,7 @@ function buildUserPrompt(body: RequestBody): string {
     const pbs = body.perBreathSummary;
     context.perBreathSummary = {
       breathCount: pbs.breathCount,
-      sampleRate: pbs.sampleRate,
+      ...('sampleRate' in pbs && { sampleRate: pbs.sampleRate }),
       // Include up to 3000 breaths (truncate to stay within token limits)
       breaths: pbs.breaths.slice(0, 3000),
     };
@@ -927,10 +930,11 @@ export async function POST(request: NextRequest) {
 
 async function handleChatGPTRequest(request: NextRequest) {
   const origin = request.headers.get('origin');
+  const consent = request.headers.get('x-airwaylab-chatgpt-consent');
   if (!origin || !/^http:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
       request.headers.get('host') !== origin.slice('http://'.length) ||
       origin !== process.env.NEXT_PUBLIC_APP_URL ||
-      request.headers.get('x-airwaylab-chatgpt-consent') !== 'https://api.openai.com') {
+      (consent !== 'https://api.openai.com' && consent !== 'https://api.openai.com; mode=deep')) {
     return NextResponse.json({ error: 'Confirm sending data to OpenAI from your local AirwayLab install.' }, { status: 403 });
   }
   const model = process.env.AIRWAYLAB_CHATGPT_MODEL;
@@ -939,21 +943,31 @@ async function handleChatGPTRequest(request: NextRequest) {
   }
 
   const raw: unknown = await request.json().catch(() => null);
-  const parsed = RequestBodySchema.safeParse(raw);
-  if (!parsed.success || parsed.data.deep || parsed.data.perBreathSummary || parsed.data.nightNotes ||
-      parsed.data.selectedNightIndex >= parsed.data.nights.length) {
-    return NextResponse.json({ error: 'ChatGPT only accepts standard insights requests without night notes.' }, { status: 400 });
+  const parsed = ChatGPTRequestBodySchema.safeParse(raw);
+  if (!parsed.success || parsed.data.nightNotes || parsed.data.selectedNightIndex >= parsed.data.nights.length) {
+    return NextResponse.json({ error: 'Invalid ChatGPT insights request. Night notes are not accepted.' }, { status: 400 });
+  }
+  const { deep, perBreathSummary } = parsed.data;
+  const isDeep = deep === true;
+  if (isDeep !== (consent === 'https://api.openai.com; mode=deep')) {
+    return NextResponse.json({ error: 'Confirm sending the data for the selected analysis to OpenAI.' }, { status: 403 });
+  }
+  if (isDeep ? !perBreathSummary?.breaths.length || perBreathSummary.breaths.length > 1000 : !!perBreathSummary) {
+    return NextResponse.json({ error: 'Deep insights require 1–1,000 per-breath summaries; standard insights do not accept them.' }, { status: 400 });
   }
 
+  const instructions = isDeep
+    ? `${SYSTEM_PROMPT}\n\nDescribe patterns within the supplied consecutive breaths, such as progressive NED or recovery after flow limitation. Cite breath indices within that excerpt and use only existing categories. The sample is from the start of the selected night's analyzed breaths; do not generalize sample patterns to the whole night or infer elapsed time from breath indices. The duration field is inspiratory time in seconds.`
+    : SYSTEM_PROMPT;
   try {
-    const text = await generateChatGPTInsights(model, SYSTEM_PROMPT, buildUserPrompt(parsed.data), request.signal);
+    const text = await generateChatGPTInsights(model, instructions, buildUserPrompt(parsed.data), request.signal);
     const rawInsights = parseInsightJSON(text);
     const insights = Array.isArray(rawInsights) ? filterInsights(rawInsights).slice(0, 6)
       .map(({ id, type, title, body, category }) => ({ id, type, title, body, category })) : [];
     if (insights.length === 0) {
       return NextResponse.json({ error: 'ChatGPT returned no valid insights. Please try again.' }, { status: 502 });
     }
-    return NextResponse.json({ insights, source: 'ai', isDeep: false });
+    return NextResponse.json({ insights, source: 'ai', isDeep });
   } catch (error) {
     // Do not capture provider errors or output; they can contain health data or credentials.
     if (error instanceof ChatGPTInsightsError) {

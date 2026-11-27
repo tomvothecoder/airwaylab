@@ -165,6 +165,8 @@ describe('AI Insights — R-B consent gate', () => {
 });
 
 const localOrigin = 'http://127.0.0.1:3000';
+const deepConsent = 'https://api.openai.com; mode=deep';
+const breath = { ned: 3, fi: 0.8, mShape: false, tPeakTi: 0.5, qPeak: 24, duration: 1.2 };
 async function callChatGPTRoute(overrides = {}, consent = 'https://api.openai.com', origin = localOrigin) {
   const { POST } = await import('@/app/api/ai-insights/route');
   const req = new Request(`${origin}/api/ai-insights`, {
@@ -192,7 +194,9 @@ describe('AI Insights — local ChatGPT plan', () => {
     mockChatGPT.mockResolvedValueOnce('[{"id":"ai-1","type":"info","title":"Test","body":"Body.","category":"trend","link":{"href":"/untrusted"}}]');
     const response = await callChatGPTRoute();
     expect(response.status).toBe(200);
-    expect((await response.json()).insights[0]).not.toHaveProperty('link');
+    const { insights, isDeep } = await response.json();
+    expect(insights[0]).not.toHaveProperty('link');
+    expect(isDeep).toBe(false);
     expect(mockChatGPT).toHaveBeenCalledWith('example-model', expect.any(String), expect.stringContaining('2026-03-12'), expect.any(AbortSignal));
     expect(mockSupabaseFrom).not.toHaveBeenCalled();
     expect(mockRpc).not.toHaveBeenCalled();
@@ -218,10 +222,38 @@ describe('AI Insights — local ChatGPT plan', () => {
     expect(mockChatGPT).not.toHaveBeenCalled();
   });
 
-  it.each([{ deep: true }, { perBreathSummary: { breaths: [], breathCount: 0, sampleRate: 25 } }, {
+  it.each([{ perBreathSummary: { breaths: [breath], breathCount: 1 } }, {
     nightNotes: { caffeine: null, alcohol: null, congestion: null, position: null, stress: null, exercise: null, note: 'private note' },
   }])('rejects disallowed request fields: %j', async (overrides) => {
     expect((await callChatGPTRoute(overrides)).status).toBe(400);
+    expect(mockChatGPT).not.toHaveBeenCalled();
+  });
+
+  it('requires consent for the exact analysis mode', async () => {
+    const body = { deep: true, perBreathSummary: { breaths: [breath], breathCount: 1 } };
+    expect((await callChatGPTRoute(body)).status).toBe(403);
+    expect((await callChatGPTRoute({}, deepConsent)).status).toBe(403);
+    expect(mockChatGPT).not.toHaveBeenCalled();
+  });
+
+  it('sends only validated computed breath metrics on an explicitly deep request', async () => {
+    mockChatGPT.mockResolvedValueOnce('[{"id":"ai-1","type":"info","title":"Test","body":"Body.","category":"ned"}]');
+    const response = await callChatGPTRoute({
+      deep: true,
+      perBreathSummary: { breaths: [{ ...breath, inspFlow: [1, 2, 3] }], breathCount: 1 },
+    }, deepConsent);
+    expect(response.status).toBe(200);
+    expect((await response.json()).isDeep).toBe(true);
+    const [, instructions, prompt] = mockChatGPT.mock.calls[0]!;
+    expect(instructions).toContain('do not generalize');
+    expect(JSON.parse(prompt).perBreathSummary).toEqual({ breaths: [breath], breathCount: 1 });
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1001])('rejects an invalid deep summary size (%i) before dispatch', async (count) => {
+    const body = { deep: true, perBreathSummary: { breaths: Array.from({ length: count }, () => breath), breathCount: count } };
+    expect((await callChatGPTRoute(body, deepConsent)).status).toBe(400);
     expect(mockChatGPT).not.toHaveBeenCalled();
   });
 
