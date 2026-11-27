@@ -6,6 +6,11 @@ const withBundleAnalyzer = bundleAnalyzer({
   enabled: process.env.ANALYZE === 'true',
 });
 
+const localSupabaseSource = process.env.NODE_ENV === 'development' &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL === 'http://127.0.0.1:54321'
+  ? ' http://127.0.0.1:54321'
+  : '';
+
 // Git short hash for build traceability (falls back to timestamp in non-git envs like Vercel)
 const gitSha = (() => {
   try {
@@ -93,7 +98,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https:",
               "font-src 'self' data:",
-              "connect-src 'self' https://*.supabase.co https://api.anthropic.com https://checkout.stripe.com https://api.stripe.com https://*.ingest.de.sentry.io https://eu.i.posthog.com https://eu-assets.i.posthog.com",
+              `connect-src 'self' https://*.supabase.co https://api.anthropic.com https://checkout.stripe.com https://api.stripe.com https://*.ingest.de.sentry.io https://eu.i.posthog.com https://eu-assets.i.posthog.com${localSupabaseSource}`,
               "frame-src https://checkout.stripe.com https://js.stripe.com",
               "worker-src 'self' blob:",
             ].join('; '),
