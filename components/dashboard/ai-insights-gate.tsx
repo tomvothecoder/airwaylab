@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useContext } from 'react';
 import { Sparkles, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth/auth-context';
 import { canAccess, getAIRemaining } from '@/lib/auth/feature-gate';
 import { fetchAIInsights, fetchDeepAIInsights } from '@/lib/ai-insights-client';
+import { ChatGPTMode } from '@/lib/chatgpt-mode';
 import { DEMO_AI_INSIGHTS } from '@/lib/demo-ai-insights';
 import { InsightsPanel } from '@/components/dashboard/insights-panel';
 import { DeepInsightTeasers } from '@/components/dashboard/deep-insight-teasers';
@@ -49,6 +50,7 @@ export function AIInsightsGate({
   isSharedView = false,
 }: Props) {
   const { user, tier, isPaid, profile, refreshProfile } = useAuth();
+  const chatGPTPlus = useContext(ChatGPTMode);
 
   const [aiInsights, setAiInsights] = useState<Insight[] | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -80,7 +82,7 @@ export function AIInsightsGate({
   // Clear insights when night changes (but show re-generate option)
   const nightChanged = insightsNightRef.current !== null && insightsNightRef.current !== selectedNight.dateStr && insightsNightRef.current !== 'demo';
 
-  const isDeepAccess = !!user && canAccess('deep_ai_insights', tier);
+  const isDeepAccess = !chatGPTPlus && !!user && canAccess('deep_ai_insights', tier);
   const aiRemaining = user ? (isPaid ? Infinity : getAIRemaining(tier)) : 0;
   const isExhausted = !isPaid && aiRemaining <= 0 && !!user;
 
@@ -94,7 +96,7 @@ export function AIInsightsGate({
   const autoRunFiredRef = useRef(false);
   useEffect(() => {
     if (autoRunFiredRef.current) return;
-    if (!user || isPaid || isDemo) return;
+    if (chatGPTPlus || isSharedView || !user || isPaid || isDemo) return;
     if (!hasAiConsent) return; // R-B: never auto-send PHI without consent
     if (aiRemaining <= 0) return;
     if (aiInsights !== null || aiLoading) return;
@@ -104,11 +106,10 @@ export function AIInsightsGate({
     // Call via ref so we don't need handleGenerate in deps (avoids declaration-order issues)
     handleGenerateRef.current?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, isPaid, isDemo, hasAiConsent]);
+  }, [chatGPTPlus, isSharedView, user, isPaid, isDemo, hasAiConsent]);
 
   const handleGenerate = useCallback(() => {
-    // R-B: do not send PHI to the AI route without consent. The CTA grants it first.
-    if (!hasAiConsent) return;
+    if (isSharedView || isDemo || !user || (!chatGPTPlus && !hasAiConsent)) return;
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -118,10 +119,12 @@ export function AIInsightsGate({
     setAiError(null);
 
     const selectedIdx = nights.indexOf(selectedNight);
-    const notes = loadNightNotes(selectedNight.dateStr);
+    const notes = chatGPTPlus ? undefined : loadNightNotes(selectedNight.dateStr);
 
-    events.aiInsightsButtonClicked(tier, aiRemaining === Infinity ? 999 : aiRemaining);
-    Sentry.addBreadcrumb({ message: 'AI insights requested', category: 'ai', data: { tier } });
+    if (!chatGPTPlus) {
+      events.aiInsightsButtonClicked(tier, aiRemaining === Infinity ? 999 : aiRemaining);
+      Sentry.addBreadcrumb({ message: 'AI insights requested', category: 'ai', data: { tier } });
+    }
 
     const nightIdx = selectedIdx >= 0 ? selectedIdx : 0;
 
@@ -148,7 +151,7 @@ export function AIInsightsGate({
             : undefined;
           return fetchDeepAIInsights(nights, nightIdx, therapyChangeDate, controller.signal, notes, perBreathSummary);
         }
-      : () => fetchAIInsights(nights, nightIdx, therapyChangeDate, controller.signal, notes);
+      : () => fetchAIInsights(nights, nightIdx, therapyChangeDate, controller.signal, notes, chatGPTPlus);
 
     fetchFn()
       .then((result) => {
@@ -157,12 +160,13 @@ export function AIInsightsGate({
         setAiInsights(result.insights);
         setIsDeepResult(result.isDeep ?? false);
         insightsNightRef.current = selectedNight.dateStr;
-        events.aiInsightsGenerated(tier, result.insights.length, isDeepAccess);
+        if (!chatGPTPlus) events.aiInsightsGenerated(tier, result.insights.length, isDeepAccess);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
         const message = err instanceof Error ? err.message : 'AI analysis failed. Please try again.';
-        setAiError(message);
+        setAiError(chatGPTPlus && !(err instanceof Error) ? 'ChatGPT request failed.' : message);
+        if (chatGPTPlus) return;
         events.aiInsightsFailed(tier, message);
 
         // Capture to Sentry — skip expected user-facing errors
@@ -180,7 +184,7 @@ export function AIInsightsGate({
       });
 
     return () => { controller.abort(); };
-  }, [nights, selectedNight, therapyChangeDate, tier, aiRemaining, isDeepAccess, hasAiConsent]);
+  }, [chatGPTPlus, isSharedView, isDemo, user, nights, selectedNight, therapyChangeDate, tier, aiRemaining, isDeepAccess, hasAiConsent]);
 
   // Keep ref in sync with the latest handleGenerate callback
   handleGenerateRef.current = handleGenerate;
@@ -213,11 +217,11 @@ export function AIInsightsGate({
 
   // Fire the deferred generation once consent is reflected in the refreshed profile.
   useEffect(() => {
-    if (!pendingGenerateRef.current) return;
+    if (chatGPTPlus || isSharedView || !pendingGenerateRef.current) return;
     if (!hasAiConsent) return;
     pendingGenerateRef.current = false;
     handleGenerateRef.current?.();
-  }, [hasAiConsent]);
+  }, [chatGPTPlus, isSharedView, hasAiConsent]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -305,7 +309,7 @@ export function AIInsightsGate({
               Create a free account for full AI insights
             </Button>
             <p className="text-center text-[11px] text-muted-foreground/80">
-              Free · no credit card · 3 AI analyses per month included
+              {chatGPTPlus ? 'Sign into AirwayLab to use the connected ChatGPT plan.' : 'Free · no credit card · 3 AI analyses per month included'}
             </p>
           </div>
         </div>
@@ -355,12 +359,12 @@ export function AIInsightsGate({
       {showInsightsPanel && (
         <InsightsPanel
           insights={ruleBasedInsights}
-          aiInsights={aiInsights}
+          aiInsights={chatGPTPlus && nightChanged ? null : aiInsights}
           aiLoading={aiLoading}
           isDeepAnalysis={isDeepResult}
           defaultExpanded={!isNewUser}
           aiCTA={
-            aiInsights && aiInsights.length > 0
+            !chatGPTPlus && aiInsights && aiInsights.length > 0
               ? <AIInsightsCTA isDemo={false} remainingCredits={serverRemainingCredits} />
               : undefined
           }
@@ -368,9 +372,20 @@ export function AIInsightsGate({
       )}
 
       {/* Generate button — only if insights not yet loaded for this night */}
-      {!aiInsights && !aiLoading && (
+      {(!aiInsights || (chatGPTPlus && nightChanged)) && !aiLoading && (
         <div className="flex flex-col items-center gap-2 rounded-xl border border-border/50 bg-card/30 px-4 py-4">
-          {isExhausted ? (
+          {chatGPTPlus ? (
+            <>
+              <p className="text-center text-xs text-muted-foreground">
+                Send nightly metrics, dates, machine settings, and trends to OpenAI using your ChatGPT plan.
+                No night notes, per-breath summaries, or raw waveforms are sent. Discuss results with your clinician.
+              </p>
+              <Button onClick={handleGenerate} className="gap-2">
+                <Sparkles className="h-3.5 w-3.5" />
+                Send to OpenAI &amp; generate insights
+              </Button>
+            </>
+          ) : isExhausted ? (
             <>
               <p className="text-sm text-muted-foreground">
                 3 free analyses used this month.
@@ -460,7 +475,7 @@ export function AIInsightsGate({
       )}
 
       {/* Re-generate for different night */}
-      {nightChanged && aiInsights && !aiLoading && (
+      {!chatGPTPlus && nightChanged && aiInsights && !aiLoading && (
         <div className="flex items-center justify-center">
           <Button
             variant="ghost"
@@ -476,7 +491,7 @@ export function AIInsightsGate({
       )}
 
       {/* Deep insight teasers for free users after AI insights load */}
-      {aiInsights && aiInsights.length > 0 && !isPaid && !isDemo && (
+      {!chatGPTPlus && aiInsights && aiInsights.length > 0 && !isPaid && !isDemo && (
         <DeepInsightTeasers night={selectedNight} />
       )}
     </>

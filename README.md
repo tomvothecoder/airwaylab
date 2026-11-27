@@ -85,6 +85,14 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+### Use a ChatGPT plan for local AI Insights (macOS)
+
+1. Configure a local or dedicated dev Supabase project with the repo migrations. In `.env.local`, set its URL and anon key, set `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3000`, and allow `http://127.0.0.1:3000/auth/callback` in Supabase Auth. Sign in to AirwayLab and set `AIRWAYLAB_CHATGPT_OWNER_ID` to that user's Supabase UUID.
+2. Run `node scripts/chatgpt.mjs login`, approve plan usage in your browser, then run `node scripts/chatgpt.mjs models`. Set `AIRWAYLAB_CHATGPT_MODEL` in `.env.local` to one of the listed slugs. No API key is needed.
+3. Start or restart with `npm run dev -- --hostname 127.0.0.1`. Open the dashboard and choose **Send to OpenAI & generate insights**. Start with synthetic data. OpenAI processes the approved metrics in the cloud; standard insights only. Do not enable this mode on a shared or remotely accessible server.
+
+Run `node scripts/chatgpt.mjs logout` to disconnect. To disable the mode, remove `AIRWAYLAB_CHATGPT_OWNER_ID` and restart (or rebuild for a production install). If an interrupted session operation leaves a stale lock, stop AirwayLab and the sign-in command before running `rmdir ~/.config/airwaylab/chatgpt.json.lock`.
+
 ### Tests
 
 ```bash

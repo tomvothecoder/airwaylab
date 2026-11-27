@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { ChatGPTModeProvider } from '@/lib/chatgpt-mode';
 
 export const metadata: Metadata = {
   title: 'Analyze — AirwayLab',
@@ -19,5 +20,5 @@ export default function AnalyzeLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return children;
+  return <ChatGPTModeProvider enabled={!!process.env.AIRWAYLAB_CHATGPT_OWNER_ID}>{children}</ChatGPTModeProvider>;
 }

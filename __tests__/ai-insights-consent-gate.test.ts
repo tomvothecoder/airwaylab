@@ -6,7 +6,7 @@
  * normally when it is true. This is the load-bearing gate that prevents PHI from
  * leaving the device without explicit consent.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── Mock external dependencies before importing route ──────────
 
@@ -70,6 +70,12 @@ vi.mock('@/lib/discord-webhook', () => ({
   formatEmailAlertEmbed: vi.fn().mockReturnValue({}),
   formatBroadcastEmbed: vi.fn().mockReturnValue({}),
   formatGrowthEmbed: vi.fn().mockReturnValue({}),
+}));
+
+const mockChatGPT = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/chatgpt-insights', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/chatgpt-insights')>(),
+  generateChatGPTInsights: mockChatGPT,
 }));
 
 const mockMessagesCreate = vi.fn();
@@ -154,5 +160,76 @@ describe('AI Insights — R-B consent gate', () => {
     const res = await callRoute(validBody());
     expect(res.status).toBe(200);
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    expect(mockChatGPT).not.toHaveBeenCalled();
+  });
+});
+
+const localOrigin = 'http://127.0.0.1:3000';
+async function callChatGPTRoute(overrides = {}, consent = 'https://api.openai.com', origin = localOrigin) {
+  const { POST } = await import('@/app/api/ai-insights/route');
+  const req = new Request(`${origin}/api/ai-insights`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json', Origin: origin, Host: new URL(origin).host,
+      ...(consent && { 'X-AirwayLab-ChatGPT-Consent': consent }),
+    },
+    body: JSON.stringify({ ...validBody(), ...overrides }),
+  });
+  return POST(req as never);
+}
+
+describe('AI Insights — local ChatGPT plan', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv('AIRWAYLAB_CHATGPT_OWNER_ID', 'consent-user');
+    vi.stubEnv('AIRWAYLAB_CHATGPT_MODEL', 'example-model');
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', localOrigin);
+    consentValue = false;
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('applies request consent and bypasses hosted consent, logging, and quotas', async () => {
+    mockChatGPT.mockResolvedValueOnce('[{"id":"ai-1","type":"info","title":"Test","body":"Body.","category":"trend","link":{"href":"/untrusted"}}]');
+    const response = await callChatGPTRoute();
+    expect(response.status).toBe(200);
+    expect((await response.json()).insights[0]).not.toHaveProperty('link');
+    expect(mockChatGPT).toHaveBeenCalledWith('example-model', expect.any(String), expect.stringContaining('2026-03-12'), expect.any(AbortSignal));
+    expect(mockSupabaseFrom).not.toHaveBeenCalled();
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(['', 'https://not-openai.example'])('rejects consent value %j', async (consent) => {
+    expect((await callChatGPTRoute({}, consent)).status).toBe(403);
+    expect(mockChatGPT).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale consent header after disabling the mode, without falling back', async () => {
+    vi.stubEnv('AIRWAYLAB_CHATGPT_OWNER_ID', '');
+    expect((await callChatGPTRoute()).status).toBe(403);
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a remote origin and non-owner', async () => {
+    expect((await callChatGPTRoute({}, undefined, 'https://airwaylab.app')).status).toBe(403);
+    vi.stubEnv('AIRWAYLAB_CHATGPT_OWNER_ID', 'another-user');
+    expect((await callChatGPTRoute()).status).toBe(403);
+    expect(mockChatGPT).not.toHaveBeenCalled();
+  });
+
+  it.each([{ deep: true }, { perBreathSummary: { breaths: [], breathCount: 0, sampleRate: 25 } }, {
+    nightNotes: { caffeine: null, alcohol: null, congestion: null, position: null, stress: null, exercise: null, note: 'private note' },
+  }])('rejects disallowed request fields: %j', async (overrides) => {
+    expect((await callChatGPTRoute(overrides)).status).toBe(400);
+    expect(mockChatGPT).not.toHaveBeenCalled();
+  });
+
+  it('does not expose malformed provider output or fall back', async () => {
+    mockChatGPT.mockResolvedValueOnce('private data and invalid JSON');
+    const response = await callChatGPTRoute();
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain('private data');
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
   });
 });

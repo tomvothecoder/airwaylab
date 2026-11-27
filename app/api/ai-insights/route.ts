@@ -11,6 +11,7 @@ import { salvageTruncatedJSON } from './salvage';
 import { sanitizePromptInput } from '@/lib/prompt-sanitize';
 import { cancelSequence } from '@/lib/email/sequences';
 import { sendAlert, COLORS } from '@/lib/discord-webhook';
+import { ChatGPTInsightsError, generateChatGPTInsights } from '@/lib/chatgpt-insights';
 
 // Vercel Pro default is 15s — far too short for Claude Sonnet (10-25s typical).
 // 60s allows for cold starts + slow responses + deep mode with large payloads.
@@ -500,6 +501,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const chatGPTOwner = process.env.AIRWAYLAB_CHATGPT_OWNER_ID;
+  if (chatGPTOwner || request.headers.has('x-airwaylab-chatgpt-consent')) {
+    if (!chatGPTOwner || user.id !== chatGPTOwner || process.env.VERCEL) {
+      return NextResponse.json({ error: 'ChatGPT plan usage is not available here.' }, { status: 403 });
+    }
+    return handleChatGPTRequest(request);
+  }
+
   // Server-side AI usage enforcement (C2)
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
@@ -695,20 +704,7 @@ export async function POST(request: NextRequest) {
     let insights: Insight[];
     let truncated = false;
     try {
-      // Strip markdown code fences and extract JSON array
-      let jsonText = textBlock.text.trim();
-      // Remove ```json ... ``` or ``` ... ``` wrappers
-      const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch?.[1]) {
-        jsonText = fenceMatch[1].trim();
-      }
-      // If model included preamble text, extract the JSON array
-      const arrayStart = jsonText.indexOf('[');
-      const arrayEnd = jsonText.lastIndexOf(']');
-      if (arrayStart !== -1 && arrayEnd > arrayStart) {
-        jsonText = jsonText.slice(arrayStart, arrayEnd + 1);
-      }
-      insights = JSON.parse(jsonText);
+      insights = parseInsightJSON(textBlock.text);
     } catch {
       // If response was truncated by max_tokens, try to salvage complete objects
       if (message.stop_reason === 'max_tokens') {
@@ -749,20 +745,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid AI response format' }, { status: 502 });
     }
 
-    // Ensure all insights have valid types and required fields
-    const validTypes = new Set(['positive', 'warning', 'actionable', 'info']);
-    const validCategories = new Set(['glasgow', 'wat', 'ned', 'oximetry', 'therapy', 'trend', 'correlation', 'temporal']);
-
     const preFilterCount = insights.length;
-    insights = insights.filter(
-      (i) =>
-        i &&
-        typeof i.id === 'string' &&
-        validTypes.has(i.type) &&
-        typeof i.title === 'string' &&
-        typeof i.body === 'string' &&
-        validCategories.has(i.category)
-    );
+    insights = filterInsights(insights);
 
     if (insights.length === 0) {
       Sentry.captureMessage('AI insights: all insights filtered as invalid', {
@@ -939,4 +923,61 @@ export async function POST(request: NextRequest) {
       { status: 502 }
     );
   }
+}
+
+async function handleChatGPTRequest(request: NextRequest) {
+  const origin = request.headers.get('origin');
+  if (!origin || !/^http:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
+      request.headers.get('host') !== origin.slice('http://'.length) ||
+      origin !== process.env.NEXT_PUBLIC_APP_URL ||
+      request.headers.get('x-airwaylab-chatgpt-consent') !== 'https://api.openai.com') {
+    return NextResponse.json({ error: 'Confirm sending data to OpenAI from your local AirwayLab install.' }, { status: 403 });
+  }
+  const model = process.env.AIRWAYLAB_CHATGPT_MODEL;
+  if (!model || !/^[\w.-]+$/.test(model)) {
+    return NextResponse.json({ error: 'Configure an eligible ChatGPT model first.' }, { status: 503 });
+  }
+
+  const raw: unknown = await request.json().catch(() => null);
+  const parsed = RequestBodySchema.safeParse(raw);
+  if (!parsed.success || parsed.data.deep || parsed.data.perBreathSummary || parsed.data.nightNotes ||
+      parsed.data.selectedNightIndex >= parsed.data.nights.length) {
+    return NextResponse.json({ error: 'ChatGPT only accepts standard insights requests without night notes.' }, { status: 400 });
+  }
+
+  try {
+    const text = await generateChatGPTInsights(model, SYSTEM_PROMPT, buildUserPrompt(parsed.data), request.signal);
+    const rawInsights = parseInsightJSON(text);
+    const insights = Array.isArray(rawInsights) ? filterInsights(rawInsights).slice(0, 6)
+      .map(({ id, type, title, body, category }) => ({ id, type, title, body, category })) : [];
+    if (insights.length === 0) {
+      return NextResponse.json({ error: 'ChatGPT returned no valid insights. Please try again.' }, { status: 502 });
+    }
+    return NextResponse.json({ insights, source: 'ai', isDeep: false });
+  } catch (error) {
+    // Do not capture provider errors or output; they can contain health data or credentials.
+    if (error instanceof ChatGPTInsightsError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return NextResponse.json({ error: 'ChatGPT took too long to respond. Please try again.' }, { status: 504 });
+    }
+    return NextResponse.json({ error: 'ChatGPT request failed. Check your connection or sign in again.' }, { status: 502 });
+  }
+}
+
+function parseInsightJSON(text: string) {
+  let json = text.trim();
+  const fence = json.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence?.[1]) json = fence[1].trim();
+  const start = json.indexOf('[');
+  const end = json.lastIndexOf(']');
+  return JSON.parse(start !== -1 && end > start ? json.slice(start, end + 1) : json);
+}
+
+function filterInsights(insights: Insight[]) {
+  const types = new Set(['positive', 'warning', 'actionable', 'info']);
+  const categories = new Set(['glasgow', 'wat', 'ned', 'oximetry', 'therapy', 'trend', 'correlation', 'temporal']);
+  return insights.filter((i) => i && typeof i.id === 'string' && types.has(i.type) &&
+    typeof i.title === 'string' && typeof i.body === 'string' && categories.has(i.category));
 }

@@ -155,7 +155,8 @@ export async function fetchAIInsights(
   selectedNightIndex: number,
   therapyChangeDate: string | null,
   signal?: AbortSignal,
-  nightNotes?: NightNotes
+  nightNotes?: NightNotes,
+  chatGPTPlus = false
 ): Promise<AIInsightsResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 63000);
@@ -173,13 +174,16 @@ export async function fetchAIInsights(
   try {
     const res = await fetch('/api/ai-insights', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(chatGPTPlus && { 'X-AirwayLab-ChatGPT-Consent': 'https://api.openai.com' }),
+      },
       credentials: 'same-origin',
       body: JSON.stringify({
         nights: strippedNights,
         selectedNightIndex: adjustedIndex,
         therapyChangeDate,
-        nightNotes,
+        nightNotes: chatGPTPlus ? undefined : nightNotes,
       }),
       signal: controller.signal,
     });
@@ -194,7 +198,7 @@ export async function fetchAIInsights(
     const validInsights = validateInsights(data);
     if (!validInsights) {
       console.error('[ai-insights] Invalid response format');
-      Sentry.captureMessage('AI insights: empty or malformed response after 200', {
+      if (!chatGPTPlus) Sentry.captureMessage('AI insights: empty or malformed response after 200', {
         level: 'warning',
         tags: { checkpoint: 'ai_insights_empty', mode: 'standard' },
         extra: { hasInsightsKey: 'insights' in (data as Record<string, unknown>), rawLength: JSON.stringify(data).length },
@@ -213,7 +217,7 @@ export async function fetchAIInsights(
         throw err; // External abort (unmount / re-generate)
       }
       console.error('[ai-insights] Request timed out after 63s');
-      Sentry.captureException(err, {
+      if (!chatGPTPlus) Sentry.captureException(err, {
         level: 'warning',
         tags: { error_type: 'client_timeout', mode: 'standard', transient: 'true' },
       });
@@ -221,7 +225,7 @@ export async function fetchAIInsights(
     }
     if (err instanceof TypeError && err.message === 'Failed to fetch') {
       console.error('[ai-insights] Network error (standard mode)');
-      Sentry.captureException(err, {
+      if (!chatGPTPlus) Sentry.captureException(err, {
         level: 'warning',
         tags: { error_type: 'network_fetch_failed', mode: 'standard', route: 'ai-insights' },
       });

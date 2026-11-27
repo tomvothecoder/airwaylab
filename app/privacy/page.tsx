@@ -146,7 +146,11 @@ export default function PrivacyPolicyPage() {
               <strong>AI Insights:</strong> When you generate AI insights, analysis data is
               sent to Anthropic&rsquo;s Claude for processing. Free accounts send aggregate
               scores. Paid accounts send per-breath summary data for deeper analysis. Raw
-              waveform samples are <strong>never</strong> sent to the AI model.
+              waveform samples are <strong>never</strong> sent to the AI model. If you run
+              AirwayLab on your own computer and enable ChatGPT plan mode, OpenAI receives
+              nightly metrics, dates, settings, and trends only when you confirm each request.
+              This mode omits night notes and per-breath summaries and does not store the
+              generated insights in AirwayLab&rsquo;s cloud services.
             </li>
             <li>
               <strong>Analysis Data:</strong> Aggregate scores and per-breath summaries are
